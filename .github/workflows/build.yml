@@ -5,9 +5,6 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,15 +24,16 @@ jobs:
           gradle-version: '8.5'
 
       - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+        run: |
+          gradle assembleDebug --console=plain 2>&1 | tee build.log || {
+            echo "::error::编译遇到问题，摘要如下："
+            grep -E "(e: |error: )" build.log || tail -n 35 build.log
+            exit 1
+          }
 
-      - name: Create Release and Upload APK
-        uses: softprops/action-gh-release@v2
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: VoltPulse Release v1.0.${{ github.run_number }}
-          files: app/build/outputs/apk/debug/*.apk
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: VoltPulse-Debug
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 7
