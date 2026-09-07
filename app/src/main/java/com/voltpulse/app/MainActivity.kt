@@ -1,12 +1,19 @@
 package com.voltpulse.app
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.HapticFeedbackConstants
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -17,11 +24,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     private lateinit var monitor: SystemMonitor
@@ -43,13 +55,23 @@ class MainActivity : ComponentActivity() {
 
 // 纯黑 AMOLED 高对比配色
 val DarkBg = Color(0xFF000000)
-val CardBg = Color(0xFF141518)
-val CardSubBg = Color(0xFF1C1E23)
-val AccentBlue = Color(0xFF2F80ED)
-val AccentGreen = Color(0xFF00C853)
+val CardBg = Color(0xFF131418)
+val CardSubBg = Color(0xFF1B1D24)
+val AccentBlue = Color(0xFF3872FF)
+val AccentCyan = Color(0xFF00E5FF)
+val AccentGreen = Color(0xFF00E676)
 val AccentOrange = Color(0xFFFF9100)
-val TextPrimary = Color(0xFFEEEEEE)
-val TextSecondary = Color(0xFF9E9E9E)
+val TextPrimary = Color(0xFFF0F2F5)
+val TextSecondary = Color(0xFF8E929B)
+
+// 液态毛玻璃调色盘
+val GlassBgStart = Color(0xD9161822)
+val GlassBgEnd = Color(0xCC0E1017)
+val GlassBorderTop = Color(0x55FFFFFF)
+val GlassBorderBottom = Color(0x0DFFFFFF)
+val LiquidPillStart = Color(0x403872FF)
+val LiquidPillEnd = Color(0x2B00E5FF)
+val LiquidPillBorder = Color(0x803872FF)
 
 @Composable
 fun SceneDarkTheme(content: @Composable () -> Unit) {
@@ -103,18 +125,18 @@ fun SceneDashboard(
             }
         }
 
-        // 仿截图高质感悬浮胶囊底栏
-        LiquidFloatingNavigationBar(
+        // 底部液态玻璃悬浮药丸底栏（支持滑动触感震动反馈）
+        LiquidGlassNavigationBar(
             selectedTab = selectedTab,
             onTabSelected = { selectedTab = it },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 28.dp)
+                .padding(bottom = 26.dp)
         )
     }
 }
 
-// 1. 仪表盘看板
+// ==================== 1. 仪表盘看板 ====================
 @Composable
 fun OverviewTab(status: SystemStatus, onOpenUsage: () -> Unit) {
     Text(text = "仪表盘看板", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
@@ -122,8 +144,9 @@ fun OverviewTab(status: SystemStatus, onOpenUsage: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(22.dp))
             .background(CardBg)
+            .border(BorderStroke(1.dp, Color(0x1AFFFFFF)), RoundedCornerShape(22.dp))
             .padding(20.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -132,12 +155,12 @@ fun OverviewTab(status: SystemStatus, onOpenUsage: () -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("SOC 平台: ${status.cpuModel}", color = TextSecondary, fontSize = 14.sp)
+                Text("SOC 平台: ${status.cpuModel}", color = TextSecondary, fontSize = 13.sp)
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
+                        .clip(RoundedCornerShape(8.dp))
                         .background(AccentBlue.copy(alpha = 0.2f))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Text(status.activeMode, color = AccentBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
@@ -170,7 +193,7 @@ fun OverviewTab(status: SystemStatus, onOpenUsage: () -> Unit) {
                     modifier = Modifier
                         .fillMaxWidth(fraction)
                         .fillMaxHeight()
-                        .background(AccentBlue)
+                        .background(Brush.horizontalGradient(listOf(AccentBlue, AccentCyan)))
                 )
             }
         }
@@ -187,7 +210,7 @@ fun OverviewTab(status: SystemStatus, onOpenUsage: () -> Unit) {
     }
 }
 
-// 2. 电池功耗
+// ==================== 2. 电池与功耗 ====================
 @Composable
 fun PowerTab(status: SystemStatus) {
     Text(text = "电池与充放电", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
@@ -195,8 +218,9 @@ fun PowerTab(status: SystemStatus) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(22.dp))
             .background(CardBg)
+            .border(BorderStroke(1.dp, Color(0x1AFFFFFF)), RoundedCornerShape(22.dp))
             .padding(24.dp)
     ) {
         Column(
@@ -242,7 +266,7 @@ fun PowerTab(status: SystemStatus) {
     CardItem(title = "充电曲线监控", subtitle = "记录每次充电全程电压与功率波动曲线", tag = "开启")
 }
 
-// 3. 性能调节
+// ==================== 3. 性能模式调控 ====================
 @Composable
 fun PerformanceTab(currentMode: String, onSelectMode: (String) -> Unit) {
     Text(text = "性能调节 (Scene方案)", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
@@ -260,6 +284,10 @@ fun PerformanceTab(currentMode: String, onSelectMode: (String) -> Unit) {
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(18.dp))
                 .background(if (isSelected) CardSubBg else CardBg)
+                .border(
+                    BorderStroke(1.dp, if (isSelected) color.copy(alpha = 0.5f) else Color(0x1AFFFFFF)),
+                    RoundedCornerShape(18.dp)
+                )
                 .clickable { onSelectMode(title) }
                 .padding(18.dp)
         ) {
@@ -281,7 +309,7 @@ fun PerformanceTab(currentMode: String, onSelectMode: (String) -> Unit) {
     }
 }
 
-// 4. 极客工具箱
+// ==================== 4. 极客工具箱 ====================
 @Composable
 fun ToolsTab(status: SystemStatus) {
     Text(text = "系统极客工具箱", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
@@ -293,32 +321,128 @@ fun ToolsTab(status: SystemStatus) {
     CardItem(title = "Keybox 密钥与环境校验", subtitle = "查看系统 TEE 硬件密钥与 Play 完整性验证等级", tag = "通过")
 }
 
-// 5. 设置
+// ==================== 5. 设置 ====================
 @Composable
 fun SettingsTab() {
     Text(text = "偏好与设置", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
     CardItem(title = "无障碍与免 Root 守护进程", subtitle = "通过无线调试配对自动常驻，免 Root 享受性能调控", tag = "配置")
     CardItem(title = "悬浮窗实时监控指示器", subtitle = "在屏幕左上角显示极小尺寸的 CPU、帧率与功率悬浮胶囊", tag = "未开启")
-    CardItem(title = "关于 VoltPulse 极客版", subtitle = "版本: 2.0.0 (MD3 AMOLED Edition)", tag = "检查更新")
+    CardItem(title = "关于 VoltPulse 极客版", subtitle = "版本: 2.0.0 (Liquid Glass Edition)", tag = "检查更新")
 }
 
-// 悬浮液态药丸导航栏（截图同款高质感样式）
+// ==================== 震动反馈驱动器 ====================
+private fun triggerSegmentTick(view: View) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        view.performHapticFeedback(HapticFeedbackConstants.SEGMENT_TICK)
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    } else {
+        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+}
+
+private fun triggerConfirmTap(view: View) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+    } else {
+        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+}
+
+// ==================== 核心：液态毛玻璃悬浮底栏 ====================
 @Composable
-fun LiquidFloatingNavigationBar(
+fun LiquidGlassNavigationBar(
     selectedTab: Int,
     onTabSelected: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val items = listOf("主页", "电源", "性能", "工具", "设置")
+    val tabCount = items.size
+    val pillTotalWidth = 336.dp
+    val itemWidthDp = pillTotalWidth / tabCount
 
+    val view = LocalView.current
+
+    // 液态弹簧弹性位移动画
+    val animatedPosition by animateFloatAsState(
+        targetValue = selectedTab.toFloat(),
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 380f),
+        label = "liquidPill"
+    )
+
+    // 外层容器：液态毛玻璃外壳
     Box(
         modifier = modifier
-            .width(330.dp)
-            .height(64.dp)
-            .clip(RoundedCornerShape(32.dp))
-            .background(Color(0xFF16171B))
-            .padding(6.dp)
+            .width(pillTotalWidth)
+            .height(66.dp)
+            .clip(RoundedCornerShape(33.dp))
+            .background(Brush.verticalGradient(listOf(GlassBgStart, GlassBgEnd)))
+            .border(
+                BorderStroke(1.2.dp, Brush.verticalGradient(listOf(GlassBorderTop, GlassBorderBottom))),
+                RoundedCornerShape(33.dp)
+            )
+            // 手势监听：按住滑动持续触发细腻 tick，松手/点击即刻响应
+            .pointerInput(tabCount) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val down = awaitFirstDown()
+                        val itemW = size.width.toFloat() / tabCount
+                        var activeIdx = (down.position.x / itemW).toInt().coerceIn(0, tabCount - 1)
+
+                        if (activeIdx != selectedTab) {
+                            triggerConfirmTap(view)
+                            onTabSelected(activeIdx)
+                        }
+
+                        var pointer = down
+                        while (pointer.pressed) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == pointer.id } ?: break
+                            if (change.pressed) {
+                                val newIdx = (change.position.x / itemW).toInt().coerceIn(0, tabCount - 1)
+                                if (newIdx != activeIdx) {
+                                    activeIdx = newIdx
+                                    triggerSegmentTick(view) // 滑动跨越选项卡触发细腻微震
+                                    onTabSelected(newIdx)
+                                }
+                            }
+                            pointer = change
+                        }
+                    }
+                }
+            }
+            .padding(5.dp)
     ) {
+        // 顶部玻璃菲涅尔高光反射线
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .width(pillTotalWidth * 0.7f)
+                .height(1.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(Color.Transparent, Color.White.copy(alpha = 0.35f), Color.Transparent)
+                    )
+                )
+        )
+
+        // 液态发光活动药丸底块
+        Box(
+            modifier = Modifier
+                .offset {
+                    IntOffset((animatedPosition * itemWidthDp.toPx()).roundToInt(), 0)
+                }
+                .width(itemWidthDp - 4.dp)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(28.dp))
+                .background(Brush.verticalGradient(listOf(LiquidPillStart, LiquidPillEnd)))
+                .border(
+                    BorderStroke(1.dp, Brush.verticalGradient(listOf(LiquidPillBorder, Color(0x3300E5FF)))),
+                    RoundedCornerShape(28.dp)
+                )
+        )
+
+        // 标签文字与图标指示点
         Row(
             modifier = Modifier.fillMaxSize(),
             verticalAlignment = Alignment.CenterVertically
@@ -329,25 +453,25 @@ fun LiquidFloatingNavigationBar(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(26.dp))
-                        .background(if (isSelected) AccentBlue.copy(alpha = 0.25f) else Color.Transparent)
-                        .clickable { onTabSelected(index) },
+                        .fillMaxHeight(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
                         Box(
                             modifier = Modifier
-                                .size(if (isSelected) 8.dp else 5.dp)
+                                .size(if (isSelected) 8.dp else 4.dp)
                                 .clip(CircleShape)
-                                .background(if (isSelected) AccentBlue else Color(0xFF757575))
+                                .background(if (isSelected) AccentCyan else Color(0xFF6B7280))
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(3.dp))
                         Text(
                             text = label,
-                            color = if (isSelected) AccentBlue else Color(0xFF757575),
+                            color = if (isSelected) TextPrimary else TextSecondary,
                             fontSize = 11.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                         )
                     }
                 }
@@ -356,12 +480,14 @@ fun LiquidFloatingNavigationBar(
     }
 }
 
+// 辅助组件
 @Composable
 fun InfoMiniCard(title: String, value: String, sub: String, modifier: Modifier = Modifier, onClick: () -> Unit = {}) {
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(CardBg)
+            .border(BorderStroke(1.dp, Color(0x1AFFFFFF)), RoundedCornerShape(18.dp))
             .clickable { onClick() }
             .padding(16.dp)
     ) {
@@ -371,6 +497,8 @@ fun InfoMiniCard(title: String, value: String, sub: String, modifier: Modifier =
             Text(value, color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(2.dp))
             Text(sub, color = AccentBlue, fontSize = 11.sp)
+                    }
+            }
         }
     }
 }
@@ -380,8 +508,9 @@ fun CardItem(title: String, subtitle: String, tag: String) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(CardBg)
+            .border(BorderStroke(1.dp, Color(0x1AFFFFFF)), RoundedCornerShape(18.dp))
             .padding(16.dp)
     ) {
         Row(
@@ -399,6 +528,7 @@ fun CardItem(title: String, subtitle: String, tag: String) {
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
                     .background(CardSubBg)
+                    .border(BorderStroke(1.dp, Color(0x263872FF)), RoundedCornerShape(6.dp))
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
                 Text(tag, color = AccentBlue, fontSize = 12.sp, fontWeight = FontWeight.Medium)
