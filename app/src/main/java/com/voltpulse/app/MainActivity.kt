@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.View
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.animateFloatAsState
@@ -28,6 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
@@ -46,6 +48,20 @@ class MainActivity : ComponentActivity() {
             SceneDarkTheme {
                 SceneDashboard(
                     fetchData = { mode -> monitor.getMetrics(mode) },
+                    onApplyMode = { mode ->
+                        val cmd = when (mode) {
+                            "极速模式" -> "setprop debug.scene.mode performance"
+                            "省电模式" -> "setprop debug.scene.mode powersave"
+                            else -> "setprop debug.scene.mode balance"
+                        }
+                        val success = monitor.applySystemTweak(cmd)
+                        val tip = if (success) "[$mode] 已激活底层调度" else "[$mode] 调控已设定 (未检测到Root/Shizuku提权)"
+                        Toast.makeText(this, tip, Toast.LENGTH_SHORT).show()
+                    },
+                    onToggleRefreshRate = { hz ->
+                        monitor.saveRefreshRate(hz)
+                        Toast.makeText(this, "全局刷新率已设为 ${hz}Hz", Toast.LENGTH_SHORT).show()
+                    },
                     onOpenUsage = { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
                 )
             }
@@ -72,7 +88,12 @@ fun SceneDarkTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-fun SceneDashboard(fetchData: (String) -> SystemStatus, onOpenUsage: () -> Unit) {
+fun SceneDashboard(
+    fetchData: (String) -> SystemStatus,
+    onApplyMode: (String) -> Unit,
+    onToggleRefreshRate: (Int) -> Unit,
+    onOpenUsage: () -> Unit
+) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var currentPerfMode by remember { mutableStateOf("均衡模式") }
     var status by remember { mutableStateOf(fetchData(currentPerfMode)) }
@@ -92,9 +113,12 @@ fun SceneDashboard(fetchData: (String) -> SystemStatus, onOpenUsage: () -> Unit)
             when (selectedTab) {
                 0 -> OverviewTab(status, onOpenUsage)
                 1 -> PowerTab(status)
-                2 -> PerformanceTab(currentPerfMode) { currentPerfMode = it }
-                3 -> ToolsTab(status)
-                4 -> SettingsTab()
+                2 -> PerformanceTab(currentPerfMode) {
+                    currentPerfMode = it
+                    onApplyMode(it)
+                }
+                3 -> ToolsTab(status, onToggleRefreshRate)
+                4 -> SettingsTab(onOpenUsage, status.hasUsagePermission)
             }
         }
         LiquidGlassNavigationBar(
@@ -126,10 +150,14 @@ fun OverviewTab(status: SystemStatus, onOpenUsage: () -> Unit) {
             }
         }
     }
+
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         InfoMiniCard("核心温度", "${status.cpuTempC} °C", "电池 ${status.batteryTempC}°C", Modifier.weight(1f))
-        InfoMiniCard("今日亮屏", "${status.screenOnTimeMin / 60}h ${status.screenOnTimeMin % 60}m", "点击授权统计", Modifier.weight(1f), onOpenUsage)
+        val sotVal = "${status.screenOnTimeMin / 60}h ${status.screenOnTimeMin % 60}m"
+        val sotSub = if (status.hasUsagePermission) "充满起算(实时)" else "需开启使用情况权限"
+        InfoMiniCard("上次充满起亮屏", sotVal, sotSub, Modifier.weight(1f), onOpenUsage)
     }
+
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         InfoMiniCard("实时功率", "${status.powerWatts} W", if (status.isCharging) "极速快充中" else "放电功耗", Modifier.weight(1f))
         InfoMiniCard("存储可用", "${(status.storageTotalGb - status.storageUsedGb).toInt()} GB", "总计 ${status.storageTotalGb.toInt()}G", Modifier.weight(1f))
@@ -151,19 +179,19 @@ fun PowerTab(status: SystemStatus) {
             }
         }
     }
-    Text("充放电策略配置", color = TextSecondary, fontSize = 14.sp)
-    CardItem("旁路供电模式", "插电玩游戏时直接为主板供电，防止电池发热", "需Root")
-    CardItem("智能充电停止", "达到 80% 电量时自动断电以延缓电池衰减", "推荐")
-    CardItem("充电曲线监控", "记录每次充电全程电压与功率波动曲线", "开启")
+    Text("充放电策略配置 (Scene标准)", color = TextSecondary, fontSize = 14.sp)
+    CardItem("充满自动重置周期", "电量达到95%以上且拔电时，自动重置SOT亮屏计时", "已生效")
+    CardItem("旁路供电模式", "插电高负载时跳过电池直接为主板供电", "需Root")
+    CardItem("智能充电停止", "达到 80% 电量时自动断开以保护电池寿命", "推荐")
 }
 
 @Composable
 fun PerformanceTab(currentMode: String, onSelectMode: (String) -> Unit) {
     Text("性能调节 (Scene方案)", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
     listOf(
-        Triple("极速模式", "解除温控约束，激进调度 CPU/GPU 满频运行", AccentOrange),
-        Triple("均衡模式", "系统日常智能调度，动态升降频兼顾续航", AccentBlue),
-        Triple("省电模式", "限制大核高频负载，限制后台进程唤醒", AccentGreen)
+        Triple("极速模式", "解除温控约束，激进调度 CPU/GPU 超大核满频", AccentOrange),
+        Triple("均衡模式", "系统日常智能调度，动态按需升降频", AccentBlue),
+        Triple("省电模式", "限制超大核高频负载，延长亮屏使用时间", AccentGreen)
     ).forEach { (title, desc, color) ->
         val isSelected = currentMode == title
         Box(
@@ -185,20 +213,28 @@ fun PerformanceTab(currentMode: String, onSelectMode: (String) -> Unit) {
 }
 
 @Composable
-fun ToolsTab(status: SystemStatus) {
+fun ToolsTab(status: SystemStatus, onToggleRefreshRate: (Int) -> Unit) {
     Text("系统极客工具箱", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
-    CardItem("屏幕刷新率控制", "强制锁定 120Hz 全局高刷或 60Hz 节能档位", "${status.refreshRateHz}Hz")
+    val nextHz = if (status.refreshRateHz == 120) 60 else 120
+    CardItem("屏幕刷新率控制", "点击在 60Hz 与 120Hz 之间一键切换", "当前: ${status.refreshRateHz}Hz (点我切${nextHz})", onClick = {
+        onToggleRefreshRate(nextHz)
+    })
     CardItem("进程墓碑与冻结", "模仿 iOS 墓碑挂起机制，防止后台进程偷跑", "运行中")
     CardItem("虚拟内存与 ZRAM 扩展", "动态压缩已启用 4.0 GB，大幅减少杀后台", "已激活")
     CardItem("Keybox 密钥与环境校验", "查看系统 TEE 硬件密钥与 Play 完整性验证等级", "通过")
 }
 
 @Composable
-fun SettingsTab() {
-    Text("偏好与设置", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+fun SettingsTab(onOpenUsage: () -> Unit, hasUsagePermission: Boolean) {
+    Text("偏好与权限设置", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+    CardItem(
+        title = "使用情况访问权限 (注意不是无障碍)",
+        subtitle = "用于读取系统前台应用亮屏时长，请进入设置找到 VoltPulse 勾选允许",
+        tag = if (hasUsagePermission) "已授权" else "去开启",
+        onClick = onOpenUsage
+    )
     CardItem("无障碍与免 Root 守护进程", "通过无线调试配对自动常驻，免 Root 享受性能调控", "配置")
-    CardItem("悬浮窗实时监控指示器", "在屏幕边缘显示极简 CPU、帧率与功率胶囊", "未开启")
-    CardItem("关于 VoltPulse 极客版", "版本: 2.0.0 (Liquid Glass Edition)", "检查更新")
+    CardItem("关于 VoltPulse 极客版", "版本: 2.1.0 (Scene Engine Edition)", "检查更新")
 }
 
 private fun triggerSegmentTick(view: View) {
@@ -297,8 +333,8 @@ fun InfoMiniCard(title: String, value: String, sub: String, modifier: Modifier =
 }
 
 @Composable
-fun CardItem(title: String, subtitle: String, tag: String) {
-    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(CardBg).border(BorderStroke(1.dp, Color(0x1AFFFFFF)), RoundedCornerShape(18.dp)).padding(16.dp)) {
+fun CardItem(title: String, subtitle: String, tag: String, onClick: () -> Unit = {}) {
+    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(CardBg).border(BorderStroke(1.dp, Color(0x1AFFFFFF)), RoundedCornerShape(18.dp)).clickable { onClick() }.padding(16.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
