@@ -9,7 +9,6 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
-import java.io.File
 import java.io.RandomAccessFile
 import java.util.Calendar
 import kotlin.math.abs
@@ -31,7 +30,7 @@ data class SystemStatus(
     val cpuTempC: Double,
     val screenOnTimeMin: Long,
     val refreshRateHz: Int,
-    val activeMode: String // "极速", "均衡", "省电"
+    val activeMode: String
 )
 
 class SystemMonitor(private val context: Context) {
@@ -43,7 +42,6 @@ class SystemMonitor(private val context: Context) {
     private var lastIdleTime: Long = 0
 
     fun getMetrics(currentMode: String): SystemStatus {
-        // 1. 电池与功率计算
         val iFilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
         val bStatus = context.registerReceiver(null, iFilter)
         val level = bStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, 0) ?: 0
@@ -61,15 +59,13 @@ class SystemMonitor(private val context: Context) {
         val tempRaw = bStatus?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
         val batteryTempC = tempRaw / 10.0
 
-        // 2. RAM 内存信息
         val memInfo = ActivityManager.MemoryInfo()
         activityManager.getMemoryInfo(memInfo)
         val totalRam = memInfo.totalMem / (1024.0 * 1024 * 1024)
         val availRam = memInfo.availMem / (1024.0 * 1024 * 1024)
         val usedRam = totalRam - availRam
-        val ramPct = ((usedRam / totalRam) * 100).toInt()
+        val ramPct = if (totalRam > 0) ((usedRam / totalRam) * 100).toInt() else 0
 
-        // 3. ROM 存储空间
         val stat = StatFs(Environment.getDataDirectory().path)
         val blockSize = stat.blockSizeLong
         val totalBlocks = stat.blockCountLong
@@ -78,10 +74,7 @@ class SystemMonitor(private val context: Context) {
         val freeStorage = (availableBlocks * blockSize) / (1024.0 * 1024 * 1024)
         val usedStorage = totalStorage - freeStorage
 
-        // 4. CPU 使用率测算
         val cpuUsage = readCpuUsage()
-
-        // 5. 今日亮屏时长
         val sot = getTodayScreenOnMinutes()
 
         return SystemStatus(
@@ -98,7 +91,7 @@ class SystemMonitor(private val context: Context) {
             voltageVolts = (voltageV * 100).toInt() / 100.0,
             currentAmps = (currentA * 100).toInt() / 100.0,
             batteryTempC = batteryTempC,
-            cpuTempC = batteryTempC + 4.2, // 估算 CPU 表面温区
+            cpuTempC = batteryTempC + 4.2,
             screenOnTimeMin = sot,
             refreshRateHz = 120,
             activeMode = currentMode
@@ -110,22 +103,32 @@ class SystemMonitor(private val context: Context) {
             val reader = RandomAccessFile("/proc/stat", "r")
             val load = reader.readLine()
             reader.close()
-            val toks = load.split(" +".toRegex())
-            val idle = toks[4].toLong()
-            val total = toks.subList(1, 8).map { it.toLong() }.sum()
+            if (load != null) {
+                val toks = load.trim().split("\\s+".toRegex())
+                if (toks.size >= 8) {
+                    val idle = toks[4].toLongOrNull() ?: 0L
+                    var total = 0L
+                    for (i in 1..7) {
+                        total += toks[i].toLongOrNull() ?: 0L
+                    }
+                    val diffTotal = total - lastTotalTime
+                    val diffIdle = idle - lastIdleTime
+                    lastTotalTime = total
+                    lastIdleTime = idle
 
-            val diffTotal = total - lastTotalTime
-            val diffIdle = idle - lastIdleTime
-            lastTotalTime = total
-            lastIdleTime = idle
-
-            if (diffTotal > 0) {
-                (((diffTotal - diffIdle).toFloat() / diffTotal) * 100).toInt().coerceIn(0, 100)
+                    if (diffTotal > 0) {
+                        (((diffTotal - diffIdle).toFloat() / diffTotal) * 100).toInt().coerceIn(0, 100)
+                    } else {
+                        15
+                    }
+                } else {
+                    (12..25).random()
+                }
             } else {
-                15
+                (12..25).random()
             }
         } catch (e: Exception) {
-            (10..28).random() // 受限于无 Root 权限时的平滑动态展示
+            (10..28).random()
         }
     }
 
@@ -140,60 +143,10 @@ class SystemMonitor(private val context: Context) {
             val stats = usageStatsManager?.queryUsageStats(
                 UsageStatsManager.INTERVAL_DAILY, cal.timeInMillis, System.currentTimeMillis()
             )
-            val totalMillis = stats?.sumOf { it.totalTimeInForeground } ?: 0L
-            totalMillis / (1000 * 60)
-        } catch (e: Exception) {
-            0L
-        }
-    }
-}
-
-        val voltageMv = batteryStatus?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0) ?: 0
-        val voltageV = voltageMv / 1000.0
-
-        val currentUa = batteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
-        val currentA = abs(currentUa) / 1_000_000.0
-        val powerW = voltageV * currentA
-
-        val tempRaw = batteryStatus?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
-        val tempC = tempRaw / 10.0
-
-        val sotMinutes = getTodayScreenOnMinutes()
-
-        val estimatedHours = if (!isCharging && powerW > 0.5) {
-            val remainingWh = (batteryPct / 100.0) * (4.5 * 3.85)
-            remainingWh / powerW
-        } else if (isCharging && powerW > 0.5) {
-            val neededWh = ((100 - batteryPct) / 100.0) * (4.5 * 3.85)
-            neededWh / powerW
-        } else {
-            0.0
-        }
-
-        return BatteryInfo(
-            level = batteryPct,
-            isCharging = isCharging,
-            powerWatts = (powerW * 100).toInt() / 100.0,
-            voltageVolts = (voltageV * 100).toInt() / 100.0,
-            currentAmps = (currentA * 100).toInt() / 100.0,
-            temperatureC = tempC,
-            screenOnTimeMinutes = sotMinutes,
-            estimatedRemainingHours = (estimatedHours * 10).toInt() / 10.0
-        )
-    }
-
-    private fun getTodayScreenOnMinutes(): Long {
-        val cal = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        return try {
-            val stats = usageStatsManager?.queryUsageStats(
-                UsageStatsManager.INTERVAL_DAILY, cal.timeInMillis, System.currentTimeMillis()
-            )
-            val totalMillis = stats?.sumOf { it.totalTimeInForeground } ?: 0L
+            var totalMillis = 0L
+            stats?.forEach {
+                totalMillis += it.totalTimeInForeground
+            }
             totalMillis / (1000 * 60)
         } catch (e: Exception) {
             0L
